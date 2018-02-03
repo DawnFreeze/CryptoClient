@@ -1,0 +1,152 @@
+/*
+ DF1337
+ 04.02.2018
+ tested on node -v 8.9.4
+ > node core.js
+
+ Usage:
+ . add endpoint to exchange array
+ . define currency format rules for exchange
+ . define api response path in requestfilter
+ . map to output object
+*/
+
+// https://api.coinbase.com/v2/prices/BTC-USD/buy
+// https://bittrex.com/api/v1.1/public/getmarketsummary?market=usdt-btc
+// https://www.bitstamp.net/api/v2/ticker/BTCUSD (unstable, 404s a lot)
+// https://api.kraken.com/0/public/Ticker?pair=XBTUSD
+// https://www.cryptopia.co.nz/api/GetMarket/BTC_USDT
+
+const https = require("https");
+const sym_c = require('./constants/symbol_crypto');
+const sym_f = require('./constants/symbol_fiat');
+const _ = require('./shared/helper');
+
+var exchanges = [];
+exchanges.push(
+    { key: 'bitstamp', value: 'https://www.bitstamp.net/api/v2/ticker/$C_SYM$F_SYM' },
+    { key: 'kraken',  value: 'https://api.kraken.com/0/public/Ticker?pair=$C_SYM$F_SYM' },
+    { key: 'cryptopia', value: 'https://www.cryptopia.co.nz/api/GetMarket/$C_SYM_$F_SYM' },
+    { key: 'coinbase', value: 'https://api.coinbase.com/v2/prices/$C_SYM-$F_SYM/buy' },
+    { key: 'bittrex', value: 'https://bittrex.com/api/v1.1/public/getmarketsummary?market=$F_SYM-$C_SYM' }
+);
+
+exchanges.forEach(function(ep) {
+    Object.keys(sym_f.SYMBOL_FIAT).forEach(function(f_key) {
+        Object.keys(sym_c.SYMBOL_CRYPTO).forEach(function(c_key) {
+            var symb = c_key;
+            var fiat = f_key;
+            //=== currency rules =========================================
+            if(ep.key === 'cryptopia' ||
+               ep.key === 'bittrex') {
+                switch(f_key) {
+                    case 'USD':
+                        fiat = 'USDT';
+                        break;
+                    default: break;
+                }
+            }
+            if(ep.key === 'kraken') {
+                switch(c_key) {
+                    case 'BTC':
+                        symb = 'XBT';
+                        break;
+                    default: break;
+                }
+            }
+            //=============================================================
+            var ep_f = ep.value.replace('$C_SYM', symb);
+            ep_f = ep_f.replace('$F_SYM', fiat);
+
+            //console.log(`sending request to ${ep.key} : ${symb}${fiat} @ ${ep_f}`);
+            https.get(ep_f, res => {
+                res.setEncoding("utf8");
+                let body = "";
+
+                res.on("data", data => { body += data; });
+                res.on("end", () => {
+                    var output = RequestFilter(ep.key, body);
+
+                    /*
+                    * handle output objects here for comparison
+                    * group-by exchange, order by current
+                    * extend exchange model to include trade price, etc.
+                    */
+
+                    if(output !== null) {
+                        console.log(
+                            `[${c_key}/${f_key}] output > ** ${output.name} ** `,
+                            `last: ${output.last} `,
+                            `high: ${output.high} `,
+                            `low: ${output.low} `,
+                            `[@ DT: ${output.time}]`
+                        )
+                    }
+                });
+            });
+        });
+    });
+});
+
+function RequestFilter(exchange, content){
+    try {
+        if (exchange === 'bitstamp') {
+            body = JSON.parse(content);
+            return queryexchange = {
+                name: exchange,
+                last: _.formatNum(body.last),
+                high: _.formatNum(body.high),
+                low: _.formatNum(body.low),
+                time: Date.now()
+            };
+        }
+        if (exchange === 'kraken') {
+            body = JSON.parse(content);
+
+            //XXBTZUSD
+            var symbol = Object.keys(body.result)[0];
+            return queryexchange = {
+                name: exchange,
+                last: _.formatNum(body.result[symbol].a[0]),
+                high: _.formatNum(body.result[symbol].h[0]),
+                low: _.formatNum(body.result[symbol].l[0]),
+                time: Date.now()
+            };
+        }
+        if (exchange === 'cryptopia') {
+            body = JSON.parse(content);
+            return queryexchange = {
+                name: exchange,
+                last: _.formatNum(body.Data.BidPrice),
+                high: _.formatNum(body.Data.High),
+                low: _.formatNum(body.Data.Low),
+                time: Date.now()
+            };
+        }
+        if (exchange === 'coinbase') {
+            body = JSON.parse(content);
+            return queryexchange = {
+                name: exchange,
+                last: _.formatNum(body.data.amount),
+                high: '(not supported)',
+                low: '(not supported)',
+                time: Date.now()
+            };
+            // could pull unsupported values
+            // from other api calls if required
+        }
+        if (exchange === 'bittrex') {
+            body = JSON.parse(content);
+            return queryexchange = {
+                name: exchange,
+                last: _.formatNum(body.result[0].Last),
+                high: _.formatNum(body.result[0].High),
+                low: _.formatNum(body.result[0].Low),
+                time: Date.now()
+            };
+        }
+    } catch(err){
+        console.log(`ERROR: invalid response from ${exchange}`);
+        return null;
+    }
+}
